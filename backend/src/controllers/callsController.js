@@ -92,7 +92,7 @@ export async function saveStageResultHandler(req, res, next) {
         // Verify call exists and is active
         const { data: call, error: callError } = await supabase
             .from('calls')
-            .select('id, status')
+            .select('id, status, current_stage')
             .eq('id', id)
             .single()
 
@@ -112,22 +112,23 @@ export async function saveStageResultHandler(req, res, next) {
                     caller_notes: caller_notes || '',
                     updated_at: new Date().toISOString(),
                 },
-                { onConflict: 'call_id,stage_number' }
+                { onConflict: 'call_id,stage_number', ignoreDuplicates: false }
             )
             .select()
             .single()
 
         if (error) throw createError(error.message, 500)
 
-        // Update call's current_stage to the furthest stage reached
-        await supabase
-            .from('calls')
-            .update({
-                current_stage: Math.max(call.current_stage || 1, stage_number),
-                updated_at: new Date().toISOString(),
-            })
-            .eq('id', id)
-            .lt('current_stage', stage_number)  // only update if new stage is further
+        // Advance current_stage only if the new stage is further than the recorded one
+        if (stage_number > (call.current_stage || 1)) {
+            await supabase
+                .from('calls')
+                .update({
+                    current_stage: stage_number,
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('id', id)
+        }
 
         res.status(201).json(data)
     } catch (err) {
@@ -151,7 +152,7 @@ export async function finishCallHandler(req, res, next) {
         if (callRes.error) throw createError(callRes.error.message, 500)
         if (callRes.data.status === 'completed') throw createError('Call is already completed', 409)
 
-        // Generate AI summary
+        // Generate AI summary (non-blocking — call still finishes if AI fails)
         let summary = null
         try {
             summary = await geminiService.summarizeCall({
@@ -162,7 +163,6 @@ export async function finishCallHandler(req, res, next) {
             })
         } catch (aiErr) {
             console.warn('[AI] Summary generation failed:', aiErr.message)
-            summary = null // Don't fail the whole request if AI is unavailable
         }
 
         // Mark call as completed
