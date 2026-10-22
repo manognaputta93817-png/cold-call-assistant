@@ -1,9 +1,8 @@
 /**
  * Gemini AI service — uses @google/genai (the official current Google AI SDK).
  *
- * Model: gemini-3.8-flash (stable, verified available via API model list)
+ * Model: gemini-2.0-flash (stable production model as of 2025)
  * Source: https://ai.google.dev/gemini-api/docs/models
- * API itself directs: "Please update your code to use models/gemini-3.8-flash"
  *
  * Supports: generateContent, Text output, Function calling, Structured outputs
  *
@@ -11,15 +10,14 @@
  * current model endpoints. This file uses @google/genai which is the
  * official replacement.
  *
- * Model is configurable via GEMINI_MODEL env var. Default: gemini-3.8-flash.
+ * Model is configurable via GEMINI_MODEL env var. Default: gemini-2.0-flash.
  */
 
 import { GoogleGenAI } from '@google/genai'
 
-// Verified via API model-list endpoint — the API itself redirects from
-// gemini-2.5-flash to this model for new API keys.
+// Stable production model. Override with GEMINI_MODEL env var if needed.
 // https://ai.google.dev/gemini-api/docs/models
-const DEFAULT_MODEL = 'gemini-3.8-flash'
+const DEFAULT_MODEL = 'gemini-2.0-flash'
 
 const STAGE_DEFINITIONS = [
     { id: 1, name: 'Opening & Introduction', purpose: 'Establish who you are and your company within the first 10–15 seconds.' },
@@ -68,7 +66,7 @@ function classifyGeminiError(err) {
         const model = process.env.GEMINI_MODEL || DEFAULT_MODEL
         return {
             httpStatus: 502,
-            userMessage: `AI model "${model}" is not available for your API key. Try setting GEMINI_MODEL=gemini-3.8-flash in backend/.env.`,
+            userMessage: `AI model "${model}" is not available for your API key. Try setting GEMINI_MODEL=gemini-2.0-flash in backend/.env.`,
         }
     }
     if (status === 429 || /quota|rate.?limit|resource.?exhausted|too many/i.test(combined)) {
