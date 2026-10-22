@@ -24,13 +24,13 @@ Salespeople on live cold calls often lose track of where they are in the convers
 | Frontend | React 18, Vite, Tailwind CSS, React Router |
 | Backend | Node.js, Express |
 | Database | Supabase (PostgreSQL) |
-| AI | Google Gemini 1.5 Flash |
+| AI | Google Gemini 2.0 Flash |
 | Frontend Deploy | Vercel |
 | Backend Deploy | Render |
 
 ### Why Gemini?
 
-Gemini 1.5 Flash provides a generous free tier suitable for a demo application, fast response times for real-time use during calls, reliable structured JSON output via careful prompting, and is available from Google AI Studio without requiring billing setup for low volumes.
+Gemini 2.0 Flash provides a generous free tier suitable for a demo application, fast response times for real-time use during calls, reliable structured JSON output via careful prompting, and is available from Google AI Studio without requiring billing setup for low volumes.
 
 ## Project Structure
 
@@ -116,6 +116,7 @@ Open http://localhost:5173
 | `SUPABASE_URL` | **Yes** | Your Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Yes** | Service role key (never expose to frontend) |
 | `GEMINI_API_KEY` | **Yes** | Google AI Studio API key |
+| `GEMINI_MODEL` | No | Gemini model name (default: `gemini-2.0-flash`) |
 | `FRONTEND_URL` | Yes | Allowed CORS origin (Vercel URL in production) |
 | `AI_PROVIDER` | No | `gemini` (default) or `mock` |
 

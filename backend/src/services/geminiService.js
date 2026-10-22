@@ -1,25 +1,65 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
+// Default to gemini-2.0-flash — the current stable model supported in API v1beta.
+// gemini-1.5-flash was removed from v1beta and returns 404.
+// Override via GEMINI_MODEL env var if needed (e.g. gemini-2.0-flash-lite).
+const DEFAULT_MODEL = 'gemini-2.0-flash'
+
 const STAGE_DEFINITIONS = [
     { id: 1, name: 'Opening & Introduction', purpose: 'Establish who you are and your company within the first 10–15 seconds.' },
     { id: 2, name: 'Permission & Pattern Interrupt', purpose: 'Obtain micro-permission to continue. Be transparent that it is a cold call.' },
     { id: 3, name: 'Reason for Calling', purpose: 'Deliver a concise, prospect-centric hook explaining why you called this person.' },
-    { id: 4, name: 'Discovery & Qualification', purpose: 'Understand the prospect\'s situation, challenges, goals, and decision-making authority.' },
+    { id: 4, name: 'Discovery & Qualification', purpose: "Understand the prospect's situation, challenges, goals, and decision-making authority." },
     { id: 5, name: 'Problem Agitation', purpose: 'Help the prospect feel the cost of the problem they described. Connect pain to business impact.' },
     { id: 6, name: 'Solution Presentation', purpose: 'Connect your solution to the specific pain named. Lead with outcomes, not feature lists.' },
     { id: 7, name: 'Objection Handling', purpose: 'Address concerns that prevent the prospect from agreeing to a next step.' },
     { id: 8, name: 'Close & Next Steps', purpose: 'Secure a specific, time-bound commitment for what happens next.' },
 ]
 
+/**
+ * Classify a Gemini SDK error into a user-safe message and an HTTP status.
+ * Never exposes the API key or raw internal details.
+ */
+function classifyGeminiError(err) {
+    const msg = err.message || ''
+    const status = err.status ?? err.httpStatus ?? null
+
+    if (status === 401 || /api.key|authenticate|unauthorized/i.test(msg)) {
+        return { httpStatus: 401, userMessage: 'AI service authentication failed. Check your GEMINI_API_KEY.' }
+    }
+    if (status === 403 || /permission|forbidden/i.test(msg)) {
+        return { httpStatus: 403, userMessage: 'AI service permission denied. Verify your API key has the correct permissions.' }
+    }
+    if (status === 404 || /not found|not supported|does not exist/i.test(msg)) {
+        const model = process.env.GEMINI_MODEL || DEFAULT_MODEL
+        return { httpStatus: 502, userMessage: `AI model "${model}" is not available. Set GEMINI_MODEL to a supported model (e.g. gemini-2.0-flash).` }
+    }
+    if (status === 429 || /quota|rate.?limit|resource.?exhausted/i.test(msg)) {
+        return { httpStatus: 429, userMessage: 'AI service quota exceeded. Please wait and try again.' }
+    }
+    if (/network|ECONNREFUSED|ETIMEDOUT|fetch/i.test(msg)) {
+        return { httpStatus: 503, userMessage: 'AI service is unreachable. Check your network connection.' }
+    }
+    // Generic fallback — do not echo raw error which may contain internal details
+    return { httpStatus: 502, userMessage: 'AI service returned an unexpected error. Please try again.' }
+}
+
 class GeminiService {
     constructor() {
         this.apiKey = process.env.GEMINI_API_KEY
         this.provider = process.env.AI_PROVIDER || 'gemini'
+        this.modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL
     }
 
     _getClient() {
         if (!this.apiKey || this.provider === 'mock') return null
         return new GoogleGenerativeAI(this.apiKey)
+    }
+
+    _getModel(client) {
+        // Re-read GEMINI_MODEL at call time so tests can override via process.env
+        const modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL
+        return client.getGenerativeModel({ model: modelName })
     }
 
     _getMockSuggestion(current_stage) {
@@ -45,7 +85,7 @@ class GeminiService {
             return this._getMockSuggestion(current_stage)
         }
 
-        const model = client.getGenerativeModel({ model: 'gemini-1.5-flash' })
+        const model = this._getModel(client)
 
         const prompt = `You are an expert B2B sales coach helping a salesperson during a live cold call.
 
@@ -86,18 +126,25 @@ Return this exact JSON structure:
             const text = result.response.text().trim()
 
             // Strip markdown fences if model adds them
-            const cleaned = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim()
+            const cleaned = text
+                .replace(/^```json\s*/i, '')
+                .replace(/^```\s*/i, '')
+                .replace(/```\s*$/i, '')
+                .trim()
             const parsed = JSON.parse(cleaned)
 
-            // Validate required fields
             if (!parsed.suggested_stage_number || !parsed.explanation) {
                 throw new Error('Invalid AI response structure')
             }
 
             return parsed
         } catch (err) {
-            console.error('[Gemini] suggestStage error:', err.message)
-            throw new Error('AI suggestion failed: ' + err.message)
+            // Only log to server — never log API key or raw secret fields
+            const { httpStatus, userMessage } = classifyGeminiError(err)
+            console.error(`[Gemini] suggestStage failed (${httpStatus}):`, userMessage)
+            const error = new Error(userMessage)
+            error.status = httpStatus
+            throw error
         }
     }
 
@@ -107,7 +154,7 @@ Return this exact JSON structure:
             return this._getMockSummary(call, stage_results, outcome)
         }
 
-        const model = client.getGenerativeModel({ model: 'gemini-1.5-flash' })
+        const model = this._getModel(client)
 
         const stageContext = stage_results
             .map((r) => {
@@ -147,8 +194,11 @@ CRITICAL RULES:
             const result = await model.generateContent(prompt)
             return result.response.text().trim()
         } catch (err) {
-            console.error('[Gemini] summarizeCall error:', err.message)
-            throw new Error('AI summary failed: ' + err.message)
+            const { httpStatus, userMessage } = classifyGeminiError(err)
+            console.error(`[Gemini] summarizeCall failed (${httpStatus}):`, userMessage)
+            const error = new Error(userMessage)
+            error.status = httpStatus
+            throw error
         }
     }
 }
