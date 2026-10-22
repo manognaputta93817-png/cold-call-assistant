@@ -10,7 +10,7 @@
         "test": "NODE_OPTIONS=--experimental-vm-modules npx jest --runInBand --detectOpenHandles"
     },
     "dependencies": {
-        "@google/generative-ai": "^0.21.0",
+        "@google/genai": "^2.30.0",
         "@supabase/supabase-js": "^2.46.1",
         "cors": "^2.8.5",
         "dotenv": "^16.4.5",

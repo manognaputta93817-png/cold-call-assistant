@@ -15,7 +15,9 @@ export async function suggestStageHandler(req, res, next) {
 
         res.json(suggestion)
     } catch (err) {
-        next(createError(err.message, 502))
+        // Preserve the HTTP status set by classifyGeminiError in the service.
+        // Fall back to 502 only when the error has no specific status.
+        next(createError(err.message, err.status || 502))
     }
 }
 

@@ -1,9 +1,22 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
+/**
+ * Gemini AI service — uses @google/genai (the official current Google AI SDK).
+ *
+ * Model: gemini-2.5-flash (stable)
+ * Source: https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash
+ * Supports: generateContent, Text output, Function calling, Structured outputs
+ *
+ * The previous SDK (@google/generative-ai) is deprecated and incompatible with
+ * current model endpoints. This file migrates to @google/genai which is the
+ * official replacement.
+ *
+ * Model is configurable via GEMINI_MODEL env var. Default: gemini-2.5-flash.
+ */
 
-// Default to gemini-2.0-flash — the current stable model supported in API v1beta.
-// gemini-1.5-flash was removed from v1beta and returns 404.
-// Override via GEMINI_MODEL env var if needed (e.g. gemini-2.0-flash-lite).
-const DEFAULT_MODEL = 'gemini-2.0-flash'
+import { GoogleGenAI } from '@google/genai'
+
+// Official stable model confirmed at:
+// https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash
+const DEFAULT_MODEL = 'gemini-2.5-flash'
 
 const STAGE_DEFINITIONS = [
     { id: 1, name: 'Opening & Introduction', purpose: 'Establish who you are and your company within the first 10–15 seconds.' },
@@ -17,30 +30,54 @@ const STAGE_DEFINITIONS = [
 ]
 
 /**
- * Classify a Gemini SDK error into a user-safe message and an HTTP status.
- * Never exposes the API key or raw internal details.
+ * Classify a Gemini SDK error into a safe user message + HTTP status.
+ * Logs diagnostic info (error name, status, code) without ever logging the
+ * API key or other secret values.
  */
 function classifyGeminiError(err) {
-    const msg = err.message || ''
-    const status = err.status ?? err.httpStatus ?? null
+    // --- Diagnostic logging (safe — no secrets) ---
+    const diagInfo = {
+        name: err.name || 'Unknown',
+        message: err.message || '',
+        status: err.status ?? err.httpStatus ?? err.statusCode ?? null,
+        code: err.code ?? null,
+        // The new SDK sometimes surfaces the upstream HTTP status via err.status
+        // and the raw API response via err.errorDetails
+        errorDetails: err.errorDetails ?? null,
+        // Underlying cause (e.g. network-level ECONNREFUSED)
+        causeMessage: err.cause?.message ?? null,
+        causeCode: err.cause?.code ?? null,
+    }
+    console.error('[Gemini] Raw error diagnostics:', JSON.stringify(diagInfo, null, 2))
 
-    if (status === 401 || /api.key|authenticate|unauthorized/i.test(msg)) {
-        return { httpStatus: 401, userMessage: 'AI service authentication failed. Check your GEMINI_API_KEY.' }
+    const msg = (err.message || '').toLowerCase()
+    const causemsg = (err.cause?.message || '').toLowerCase()
+    const combined = msg + ' ' + causemsg
+    const status = diagInfo.status
+
+    if (status === 401 || /api.key|authenticate|unauthorized|invalid.key/i.test(combined)) {
+        return { httpStatus: 401, userMessage: 'AI service authentication failed. Verify your GEMINI_API_KEY is correct and active.' }
     }
-    if (status === 403 || /permission|forbidden/i.test(msg)) {
-        return { httpStatus: 403, userMessage: 'AI service permission denied. Verify your API key has the correct permissions.' }
+    if (status === 403 || /permission|forbidden/i.test(combined)) {
+        return { httpStatus: 403, userMessage: 'AI service permission denied. Check that your API key has the Gemini API enabled.' }
     }
-    if (status === 404 || /not found|not supported|does not exist/i.test(msg)) {
+    if (status === 404 || /not found|not supported|does not exist|no model/i.test(combined)) {
         const model = process.env.GEMINI_MODEL || DEFAULT_MODEL
-        return { httpStatus: 502, userMessage: `AI model "${model}" is not available. Set GEMINI_MODEL to a supported model (e.g. gemini-2.0-flash).` }
+        return { httpStatus: 502, userMessage: `AI model "${model}" not found. The model ID may be unsupported for your API key tier. Try GEMINI_MODEL=gemini-2.5-flash.` }
     }
-    if (status === 429 || /quota|rate.?limit|resource.?exhausted/i.test(msg)) {
-        return { httpStatus: 429, userMessage: 'AI service quota exceeded. Please wait and try again.' }
+    if (status === 429 || /quota|rate.?limit|resource.?exhausted|too many/i.test(combined)) {
+        return { httpStatus: 429, userMessage: 'AI service quota exceeded. Please wait and try again shortly.' }
     }
-    if (/network|ECONNREFUSED|ETIMEDOUT|fetch/i.test(msg)) {
-        return { httpStatus: 503, userMessage: 'AI service is unreachable. Check your network connection.' }
+    if (
+        /econnrefused|dns|getaddrinfo|enotfound|etimedout|socket/i.test(combined) ||
+        /network|unreachable/i.test(causemsg)
+    ) {
+        return { httpStatus: 503, userMessage: 'Cannot reach the Gemini API. Check your internet connection and that generativelanguage.googleapis.com is accessible.' }
     }
-    // Generic fallback — do not echo raw error which may contain internal details
+    // JSON parse errors from the model response
+    if (/json|parse|syntax/i.test(combined)) {
+        return { httpStatus: 502, userMessage: 'AI returned an unexpected response format. Please try again.' }
+    }
     return { httpStatus: 502, userMessage: 'AI service returned an unexpected error. Please try again.' }
 }
 
@@ -48,18 +85,15 @@ class GeminiService {
     constructor() {
         this.apiKey = process.env.GEMINI_API_KEY
         this.provider = process.env.AI_PROVIDER || 'gemini'
-        this.modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL
     }
 
     _getClient() {
         if (!this.apiKey || this.provider === 'mock') return null
-        return new GoogleGenerativeAI(this.apiKey)
+        return new GoogleGenAI({ apiKey: this.apiKey })
     }
 
-    _getModel(client) {
-        // Re-read GEMINI_MODEL at call time so tests can override via process.env
-        const modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL
-        return client.getGenerativeModel({ model: modelName })
+    _getModelName() {
+        return process.env.GEMINI_MODEL || DEFAULT_MODEL
     }
 
     _getMockSuggestion(current_stage) {
@@ -81,11 +115,10 @@ class GeminiService {
 
     async suggestStage({ current_stage, prospect_words, caller_notes }) {
         const client = this._getClient()
-        if (!client) {
-            return this._getMockSuggestion(current_stage)
-        }
+        if (!client) return this._getMockSuggestion(current_stage)
 
-        const model = this._getModel(client)
+        const modelName = this._getModelName()
+        console.log(`[Gemini] suggestStage using model: ${modelName}`)
 
         const prompt = `You are an expert B2B sales coach helping a salesperson during a live cold call.
 
@@ -122,8 +155,13 @@ Return this exact JSON structure:
 }`
 
         try {
-            const result = await model.generateContent(prompt)
-            const text = result.response.text().trim()
+            const response = await client.models.generateContent({
+                model: modelName,
+                contents: prompt,
+            })
+            const text = response.text?.trim() ?? response.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+
+            if (!text) throw new Error('Empty response from AI model')
 
             // Strip markdown fences if model adds them
             const cleaned = text
@@ -134,14 +172,13 @@ Return this exact JSON structure:
             const parsed = JSON.parse(cleaned)
 
             if (!parsed.suggested_stage_number || !parsed.explanation) {
-                throw new Error('Invalid AI response structure')
+                throw new Error('Invalid AI response structure — missing required fields')
             }
 
+            console.log(`[Gemini] suggestStage success (stage ${parsed.suggested_stage_number}, confidence: ${parsed.confidence})`)
             return parsed
         } catch (err) {
-            // Only log to server — never log API key or raw secret fields
             const { httpStatus, userMessage } = classifyGeminiError(err)
-            console.error(`[Gemini] suggestStage failed (${httpStatus}):`, userMessage)
             const error = new Error(userMessage)
             error.status = httpStatus
             throw error
@@ -150,11 +187,10 @@ Return this exact JSON structure:
 
     async summarizeCall({ call, stage_results, outcome, final_note }) {
         const client = this._getClient()
-        if (!client) {
-            return this._getMockSummary(call, stage_results, outcome)
-        }
+        if (!client) return this._getMockSummary(call, stage_results, outcome)
 
-        const model = this._getModel(client)
+        const modelName = this._getModelName()
+        console.log(`[Gemini] summarizeCall using model: ${modelName}`)
 
         const stageContext = stage_results
             .map((r) => {
@@ -191,11 +227,18 @@ CRITICAL RULES:
 - Be factual and professional`
 
         try {
-            const result = await model.generateContent(prompt)
-            return result.response.text().trim()
+            const response = await client.models.generateContent({
+                model: modelName,
+                contents: prompt,
+            })
+            const text = response.text?.trim() ?? response.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+
+            if (!text) throw new Error('Empty response from AI model')
+
+            console.log(`[Gemini] summarizeCall success (${text.split(' ').length} words)`)
+            return text
         } catch (err) {
             const { httpStatus, userMessage } = classifyGeminiError(err)
-            console.error(`[Gemini] summarizeCall failed (${httpStatus}):`, userMessage)
             const error = new Error(userMessage)
             error.status = httpStatus
             throw error
