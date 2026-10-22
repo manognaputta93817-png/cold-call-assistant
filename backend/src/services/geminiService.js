@@ -1,22 +1,25 @@
 /**
  * Gemini AI service — uses @google/genai (the official current Google AI SDK).
  *
- * Model: gemini-2.5-flash (stable)
- * Source: https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash
+ * Model: gemini-3.8-flash (stable, verified available via API model list)
+ * Source: https://ai.google.dev/gemini-api/docs/models
+ * API itself directs: "Please update your code to use models/gemini-3.8-flash"
+ *
  * Supports: generateContent, Text output, Function calling, Structured outputs
  *
  * The previous SDK (@google/generative-ai) is deprecated and incompatible with
- * current model endpoints. This file migrates to @google/genai which is the
+ * current model endpoints. This file uses @google/genai which is the
  * official replacement.
  *
- * Model is configurable via GEMINI_MODEL env var. Default: gemini-2.5-flash.
+ * Model is configurable via GEMINI_MODEL env var. Default: gemini-3.8-flash.
  */
 
 import { GoogleGenAI } from '@google/genai'
 
-// Official stable model confirmed at:
-// https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash
-const DEFAULT_MODEL = 'gemini-2.5-flash'
+// Verified via API model-list endpoint — the API itself redirects from
+// gemini-2.5-flash to this model for new API keys.
+// https://ai.google.dev/gemini-api/docs/models
+const DEFAULT_MODEL = 'gemini-3.8-flash'
 
 const STAGE_DEFINITIONS = [
     { id: 1, name: 'Opening & Introduction', purpose: 'Establish who you are and your company within the first 10–15 seconds.' },
@@ -61,9 +64,12 @@ function classifyGeminiError(err) {
     if (status === 403 || /permission|forbidden/i.test(combined)) {
         return { httpStatus: 403, userMessage: 'AI service permission denied. Check that your API key has the Gemini API enabled.' }
     }
-    if (status === 404 || /not found|not supported|does not exist|no model/i.test(combined)) {
+    if (status === 404 || /not found|not supported|does not exist|no model|no longer available/i.test(combined)) {
         const model = process.env.GEMINI_MODEL || DEFAULT_MODEL
-        return { httpStatus: 502, userMessage: `AI model "${model}" not found. The model ID may be unsupported for your API key tier. Try GEMINI_MODEL=gemini-2.5-flash.` }
+        return {
+            httpStatus: 502,
+            userMessage: `AI model "${model}" is not available for your API key. Try setting GEMINI_MODEL=gemini-3.8-flash in backend/.env.`,
+        }
     }
     if (status === 429 || /quota|rate.?limit|resource.?exhausted|too many/i.test(combined)) {
         return { httpStatus: 429, userMessage: 'AI service quota exceeded. Please wait and try again shortly.' }
